@@ -211,6 +211,30 @@ func (y *YTDLP) PrepareDownload(
 	parent context.Context,
 	mediaURL, formatID string,
 ) (*PreparedDownload, error) {
+	download, err := y.prepareDownloadOnce(parent, mediaURL, formatID)
+	if err == nil {
+		return download, nil
+	}
+	if !strings.Contains(formatID, "+") {
+		return nil, err
+	}
+
+	y.logger.Warn().
+		Str("requested_format", formatID).
+		Err(err).
+		Msg("high-quality download failed, falling back to pre-muxed format")
+
+	fallback, fallbackErr := y.prepareDownloadOnce(parent, mediaURL, "18")
+	if fallbackErr == nil {
+		return fallback, nil
+	}
+	return nil, fmt.Errorf("%w: fallback download failed: %v", err, fallbackErr)
+}
+
+func (y *YTDLP) prepareDownloadOnce(
+	parent context.Context,
+	mediaURL, formatID string,
+) (*PreparedDownload, error) {
 	tempDir, err := os.MkdirTemp("", "video-download-*")
 	if err != nil {
 		return nil, fmt.Errorf("%w: create temporary directory: %v", ErrExtractionFailed, err)
@@ -385,4 +409,3 @@ func (y *YTDLP) logCommandError(operation string, err error) {
 	}
 	event.Err(err).Msg("yt-dlp command failed")
 }
-
