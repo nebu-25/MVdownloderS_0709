@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -19,9 +21,10 @@ import (
 var ErrExtractionFailed = errors.New("media extraction failed")
 
 type YTDLP struct {
-	binary  string
-	timeout time.Duration
-	logger  zerolog.Logger
+	binary     string
+	ffmpegPath string
+	timeout    time.Duration
+	logger     zerolog.Logger
 }
 
 type rawMetadata struct {
@@ -43,8 +46,10 @@ type rawFormat struct {
 	ACodec         string  `json:"acodec"`
 }
 
-func NewYTDLP(binary string, timeout time.Duration, logger zerolog.Logger) *YTDLP {
-	return &YTDLP{binary: binary, timeout: timeout, logger: logger}
+func NewYTDLP(binary, ffmpegPath string, timeout time.Duration, logger zerolog.Logger) *YTDLP {
+	return &YTDLP{
+		binary: binary, ffmpegPath: ffmpegPath, timeout: timeout, logger: logger,
+	}
 }
 
 func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.MetadataResponse, error) {
@@ -80,7 +85,7 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 	var audio *rawFormat
 	for i := range raw.Formats {
 		format := &raw.Formats[i]
-		if format.VCodec == "none" && format.ACodec != "none" &&
+		if format.VCodec == "none" && isMP4AudioCodec(format.ACodec) &&
 			(format.Ext == "m4a" || format.Ext == "mp4") {
 			if audio == nil || formatBitrate(*format) > formatBitrate(*audio) {
 				audio = format
@@ -89,7 +94,8 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 	}
 
 	for _, format := range raw.Formats {
-		if format.FormatID == "" || format.Ext != "mp4" || format.VCodec == "none" {
+		if format.FormatID == "" || format.Ext != "mp4" ||
+			!isMP4VideoCodec(format.VCodec) {
 			continue
 		}
 		resolution := format.Resolution
@@ -116,6 +122,9 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 			})
 			continue
 		}
+		if !isMP4AudioCodec(format.ACodec) {
+			continue
+		}
 
 		result.Formats = append(result.Formats, model.Format{
 			FormatID: format.FormatID, Resolution: resolution, Ext: format.Ext,
@@ -123,6 +132,18 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 		})
 	}
 	return result, nil
+}
+
+func isMP4VideoCodec(codec string) bool {
+	codec = strings.ToLower(codec)
+	return strings.HasPrefix(codec, "avc1") ||
+		strings.HasPrefix(codec, "avc") ||
+		strings.HasPrefix(codec, "h264")
+}
+
+func isMP4AudioCodec(codec string) bool {
+	codec = strings.ToLower(codec)
+	return strings.HasPrefix(codec, "mp4a") || strings.HasPrefix(codec, "aac")
 }
 
 func effectiveFilesize(format rawFormat) *int64 {
@@ -156,6 +177,19 @@ func (y *YTDLP) Stream(
 	destination io.Writer,
 	onStderr func(string),
 ) error {
+	parts := strings.Split(formatID, "+")
+	if len(parts) == 2 {
+		return y.streamMerged(parent, mediaURL, parts[0], parts[1], destination, onStderr)
+	}
+	return y.streamSingle(parent, mediaURL, formatID, destination, onStderr)
+}
+
+func (y *YTDLP) streamSingle(
+	parent context.Context,
+	mediaURL, formatID string,
+	destination io.Writer,
+	onStderr func(string),
+) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
@@ -163,8 +197,6 @@ func (y *YTDLP) Stream(
 		"--no-playlist",
 		"--no-warnings",
 		"--no-progress",
-		"--downloader", "ffmpeg",
-		"--merge-output-format", "mp4",
 	}
 	args = append(args, "-f", formatID, "-o", "-", "--", mediaURL)
 	cmd := exec.CommandContext(ctx, y.binary, args...)
@@ -207,6 +239,148 @@ func (y *YTDLP) Stream(
 		return ErrExtractionFailed
 	}
 	return nil
+}
+
+func (y *YTDLP) streamMerged(
+	parent context.Context,
+	mediaURL, videoFormat, audioFormat string,
+	destination io.Writer,
+	onStderr func(string),
+) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+
+	videoReader, videoWriter, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("%w: create video pipe: %v", ErrExtractionFailed, err)
+	}
+	defer videoReader.Close()
+	defer videoWriter.Close()
+
+	audioReader, audioWriter, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("%w: create audio pipe: %v", ErrExtractionFailed, err)
+	}
+	defer audioReader.Close()
+	defer audioWriter.Close()
+
+	videoCmd := y.downloadCommand(ctx, mediaURL, videoFormat)
+	videoCmd.Stdout = videoWriter
+	audioCmd := y.downloadCommand(ctx, mediaURL, audioFormat)
+	audioCmd.Stdout = audioWriter
+
+	ffmpegCmd := exec.CommandContext(ctx, y.ffmpegPath,
+		"-hide_banner",
+		"-loglevel", "warning",
+		"-i", "pipe:3",
+		"-i", "pipe:4",
+		"-map", "0:v:0",
+		"-map", "1:a:0",
+		"-c:v", "copy",
+		"-c:a", "copy",
+		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"-f", "mp4",
+		"pipe:1",
+	)
+	ffmpegCmd.ExtraFiles = []*os.File{videoReader, audioReader}
+	ffmpegCmd.Stdout = destination
+
+	videoStderr, err := videoCmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("%w: video stderr: %v", ErrExtractionFailed, err)
+	}
+	audioStderr, err := audioCmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("%w: audio stderr: %v", ErrExtractionFailed, err)
+	}
+	ffmpegStderr, err := ffmpegCmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("%w: ffmpeg stderr: %v", ErrExtractionFailed, err)
+	}
+
+	stderrDone := make(chan struct{}, 3)
+	var stderrMu sync.Mutex
+	scanStderr(videoStderr, "video", onStderr, &stderrMu, stderrDone)
+	scanStderr(audioStderr, "audio", onStderr, &stderrMu, stderrDone)
+	scanStderr(ffmpegStderr, "ffmpeg", onStderr, &stderrMu, stderrDone)
+
+	if err := ffmpegCmd.Start(); err != nil {
+		y.logCommandError("ffmpeg_start", err)
+		return ErrExtractionFailed
+	}
+	if err := videoCmd.Start(); err != nil {
+		cancel()
+		_ = ffmpegCmd.Wait()
+		y.logCommandError("video_download_start", err)
+		return ErrExtractionFailed
+	}
+	_ = videoWriter.Close()
+	if err := audioCmd.Start(); err != nil {
+		cancel()
+		_ = videoCmd.Wait()
+		_ = ffmpegCmd.Wait()
+		y.logCommandError("audio_download_start", err)
+		return ErrExtractionFailed
+	}
+	_ = audioWriter.Close()
+
+	type processResult struct {
+		name string
+		err  error
+	}
+	results := make(chan processResult, 3)
+	go func() { results <- processResult{"video_download", videoCmd.Wait()} }()
+	go func() { results <- processResult{"audio_download", audioCmd.Wait()} }()
+	go func() { results <- processResult{"ffmpeg_mux", ffmpegCmd.Wait()} }()
+
+	var firstErr error
+	for range 3 {
+		result := <-results
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			cancel()
+			y.logCommandError(result.name, result.err)
+		}
+	}
+	for range 3 {
+		<-stderrDone
+	}
+	if firstErr != nil {
+		return ErrExtractionFailed
+	}
+	return nil
+}
+
+func (y *YTDLP) downloadCommand(ctx context.Context, mediaURL, formatID string) *exec.Cmd {
+	return exec.CommandContext(ctx, y.binary,
+		"--no-playlist",
+		"--no-warnings",
+		"--no-progress",
+		"-f", formatID,
+		"-o", "-",
+		"--",
+		mediaURL,
+	)
+}
+
+func scanStderr(
+	reader io.Reader,
+	prefix string,
+	onStderr func(string),
+	callbackMu *sync.Mutex,
+	done chan<- struct{},
+) {
+	go func() {
+		defer func() { done <- struct{}{} }()
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			if onStderr != nil {
+				callbackMu.Lock()
+				onStderr(prefix + ": " + scanner.Text())
+				callbackMu.Unlock()
+			}
+		}
+	}()
 }
 
 func (y *YTDLP) logCommandError(operation string, err error) {

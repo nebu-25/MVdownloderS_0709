@@ -1,9 +1,9 @@
 # Video Downloader MVP
 
 YouTube, X(구 Twitter), TikTok의 공개 영상 메타데이터를 조회하고, 선택한
-포맷을 디스크 저장 없이 HTTP 응답으로 전달하는 Go/Fiber API입니다. 모든
-다운로드는 ffmpeg downloader를 기본으로 사용하며, DASH 비디오·오디오
-분리 포맷도 stdout에서 MP4로 병합합니다.
+포맷을 디스크 저장 없이 HTTP 응답으로 전달하는 Go/Fiber API입니다. 이미
+결합된 MP4는 그대로 전달하고, DASH 비디오·오디오 분리 포맷은 각각 독립된
+파이프로 내려받아 ffmpeg에서 fragmented MP4로 병합합니다.
 
 본인 콘텐츠 백업 또는 권한을 가진 콘텐츠에만 사용해야 합니다. DRM 우회는
 지원하지 않습니다.
@@ -58,7 +58,7 @@ curl -G http://localhost:8080/api/v1/download \
   -o video.mp4
 ```
 
-서버는 메타데이터에 포함된 MP4 결합 포맷과 DASH 조합을 반환합니다.
+서버는 H.264/AAC 기반 MP4 결합 포맷과 DASH 조합을 반환합니다.
 두 개를 초과하는 포맷 조합이나 임의의 yt-dlp 선택 표현식은 허용하지 않습니다.
 
 ## 환경 변수
@@ -68,6 +68,7 @@ curl -G http://localhost:8080/api/v1/download \
 | `PORT` | `8080` | HTTP 포트 |
 | `RATE_LIMIT_PER_IP` | `2` | IP별 동시 다운로드 요청 제한 |
 | `YTDLP_PATH` | `yt-dlp` | yt-dlp 실행 파일 경로 |
+| `FFMPEG_PATH` | `ffmpeg` | ffmpeg 실행 파일 경로 |
 | `YTDLP_TIMEOUT` | `30s` | 메타데이터 추출 제한 시간 |
 
 ## 검증

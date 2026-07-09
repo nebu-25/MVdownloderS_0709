@@ -17,7 +17,12 @@ import (
 func main() {
 	logger := zerolog.New(os.Stdout).With().Timestamp().Logger()
 	timeout := envDuration("YTDLP_TIMEOUT", 30*time.Second)
-	ytdlp := service.NewYTDLP(envString("YTDLP_PATH", "yt-dlp"), timeout, logger)
+	ytdlp := service.NewYTDLP(
+		envString("YTDLP_PATH", "yt-dlp"),
+		envString("FFMPEG_PATH", "ffmpeg"),
+		timeout,
+		logger,
+	)
 
 	app := fiber.New(fiber.Config{
 		AppName:      "video-downloader",
