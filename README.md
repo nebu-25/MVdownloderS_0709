@@ -62,6 +62,21 @@ curl -G http://localhost:8080/api/v1/download \
 임의의 yt-dlp 선택 표현식은 허용하지 않습니다. DASH 조합은
 `POT_PROVIDER_URL`이 설정된 경우에만 허용됩니다.
 
+비동기 작업도 사용할 수 있습니다.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/download-jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.youtube.com/watch?v=VIDEO_ID","format_id":"18"}'
+```
+
+응답의 `job_id`로 상태와 다운로드 가능 여부를 조회합니다.
+
+```bash
+curl http://localhost:8080/api/v1/download-jobs/JOB_ID
+curl -G http://localhost:8080/api/v1/download-jobs/JOB_ID/download
+```
+
 ## Railway 고화질 YouTube 설정
 
 1. 같은 Railway 프로젝트에 Docker Image 서비스를 추가합니다.
@@ -77,6 +92,16 @@ POT_PROVIDER_URL=http://pot-provider.railway.internal:4416
 Provider가 설정되지 않으면 서비스는 검증된 단일 MP4 포맷으로 자동
 폴백합니다. PO Token은 YouTube의 정책 변경이나 IP 상태에 따라 403 차단을
 완전히 방지하지 못할 수 있습니다.
+
+## 에러 코드
+
+- `INVALID_URL`
+- `INVALID_FORMAT`
+- `POT_PROVIDER_UNREACHABLE`
+- `YTDLP_403`
+- `OUTPUT_NOT_CREATED`
+- `FFPROBE_FAILED`
+- `EXTRACTION_FAILED`
 
 ## 환경 변수
 

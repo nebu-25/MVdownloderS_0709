@@ -26,6 +26,7 @@ func main() {
 		timeout,
 		logger,
 	)
+	jobs := service.NewDownloadJobManager(ytdlp, logger)
 
 	app := fiber.New(fiber.Config{
 		AppName:      "video-downloader",
@@ -40,6 +41,9 @@ func main() {
 	api := app.Group("/api/v1")
 	api.Get("/health", handler.Health)
 	api.Post("/metadata", handler.Metadata(ytdlp))
+	api.Post("/download-jobs", handler.DownloadJobCreate(jobs, ytdlp))
+	api.Get("/download-jobs/:job_id", handler.DownloadJobStatus(jobs))
+	api.Get("/download-jobs/:job_id/download", handler.DownloadJobFile(jobs, logger))
 	api.Get(
 		"/download",
 		middleware.ConcurrentByIP(envInt("RATE_LIMIT_PER_IP", 2)),

@@ -18,6 +18,10 @@ import (
 )
 
 var ErrExtractionFailed = errors.New("media extraction failed")
+var ErrProviderUnavailable = errors.New("provider unavailable")
+var ErrSourceBlocked = errors.New("source blocked")
+var ErrOutputNotCreated = errors.New("output file not created")
+var ErrMediaVerificationFailed = errors.New("media verification failed")
 
 type YTDLP struct {
 	binary         string
@@ -76,19 +80,16 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 	args = append(args, y.runtimeArgs()...)
 	args = append(args, "--", mediaURL)
 	cmd := exec.CommandContext(ctx, y.binary, args...)
-	output, err := cmd.Output()
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		y.logCommandError("metadata", err)
-		if ctx.Err() != nil {
-			return model.MetadataResponse{}, fmt.Errorf("%w: timeout", ErrExtractionFailed)
-		}
-		return model.MetadataResponse{}, ErrExtractionFailed
+		y.logOutputError("metadata", err, output)
+		return model.MetadataResponse{}, y.classifyFailure("metadata", err, string(output), ctx.Err())
 	}
 
 	var raw rawMetadata
 	if err := json.Unmarshal(output, &raw); err != nil {
 		y.logger.Error().Err(err).Msg("invalid yt-dlp metadata response")
-		return model.MetadataResponse{}, ErrExtractionFailed
+		return model.MetadataResponse{}, fmt.Errorf("%w: invalid metadata json", ErrExtractionFailed)
 	}
 
 	result := model.MetadataResponse{
@@ -278,7 +279,7 @@ func (y *YTDLP) prepareDownloadOnce(
 	if waitErr != nil {
 		cleanup()
 		y.logOutputError("download_prepare", waitErr, []byte(stderr.String()))
-		return nil, ErrExtractionFailed
+		return nil, y.classifyFailure("download_prepare", waitErr, stderr.String(), parent.Err())
 	}
 
 	actualPath := strings.TrimSpace(string(outputBytes))
@@ -296,7 +297,7 @@ func (y *YTDLP) prepareDownloadOnce(
 
 	if err := y.verifyMedia(parent, resolvedPath); err != nil {
 		cleanup()
-		return nil, ErrExtractionFailed
+		return nil, err
 	}
 
 	file, err := os.Open(resolvedPath)
@@ -326,7 +327,7 @@ func (y *YTDLP) ensureDownloadPath(actualPath, fallbackPath string) (string, err
 	dir := filepath.Dir(fallbackPath)
 	matches, err := filepath.Glob(filepath.Join(dir, "*"))
 	if err != nil {
-		return "", fmt.Errorf("%w: inspect download directory: %v", ErrExtractionFailed, err)
+		return "", fmt.Errorf("%w: inspect download directory: %v", ErrOutputNotCreated, err)
 	}
 	if len(matches) == 1 {
 		if _, err := os.Stat(matches[0]); err == nil {
@@ -335,9 +336,9 @@ func (y *YTDLP) ensureDownloadPath(actualPath, fallbackPath string) (string, err
 	}
 
 	if len(matches) > 0 {
-		return "", fmt.Errorf("%w: output file not created: %s (files: %s)", ErrExtractionFailed, actualPath, strings.Join(matches, ", "))
+		return "", fmt.Errorf("%w: output file not created: %s (files: %s)", ErrOutputNotCreated, actualPath, strings.Join(matches, ", "))
 	}
-	return "", fmt.Errorf("%w: output file not created: %s", ErrExtractionFailed, actualPath)
+	return "", fmt.Errorf("%w: output file not created: %s", ErrOutputNotCreated, actualPath)
 }
 
 func (y *YTDLP) runtimeArgs() []string {
@@ -361,15 +362,38 @@ func (y *YTDLP) verifyMedia(ctx context.Context, mediaPath string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		y.logOutputError("ffprobe", err, output)
-		return err
+		return fmt.Errorf("%w: %v", ErrMediaVerificationFailed, err)
 	}
 	tracks := string(output)
 	if !strings.Contains(tracks, "video") || !strings.Contains(tracks, "audio") {
 		y.logger.Error().Str("tracks", strings.TrimSpace(tracks)).
 			Msg("prepared file is missing video or audio")
-		return errors.New("prepared file is missing required media tracks")
+		return fmt.Errorf("%w: prepared file is missing required media tracks", ErrMediaVerificationFailed)
 	}
 	return nil
+}
+
+func (y *YTDLP) classifyFailure(operation string, err error, output string, ctxErr error) error {
+	if ctxErr != nil {
+		return fmt.Errorf("%w: timeout", ErrExtractionFailed)
+	}
+	lowered := strings.ToLower(output)
+	if strings.Contains(lowered, "no such host") ||
+		strings.Contains(lowered, "connection refused") ||
+		strings.Contains(lowered, "timeout") {
+		return fmt.Errorf("%w: %s: %v", ErrProviderUnavailable, operation, err)
+	}
+	if strings.Contains(lowered, "403") ||
+		strings.Contains(lowered, "http error 403") ||
+		strings.Contains(lowered, "forbidden") ||
+		strings.Contains(lowered, "bot") {
+		return fmt.Errorf("%w: %s: %v", ErrSourceBlocked, operation, err)
+	}
+	if strings.Contains(lowered, "file not found") ||
+		strings.Contains(lowered, "no such file or directory") {
+		return fmt.Errorf("%w: %s: %v", ErrOutputNotCreated, operation, err)
+	}
+	return fmt.Errorf("%w: %s: %v", ErrExtractionFailed, operation, err)
 }
 
 func (y *YTDLP) logOutputError(operation string, err error, output []byte) {

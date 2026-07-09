@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 type MetadataRequest struct {
 	URL string `json:"url"`
 }
@@ -19,6 +21,22 @@ type MetadataResponse struct {
 	Thumbnail string   `json:"thumbnail"`
 	Duration  float64  `json:"duration"`
 	Formats   []Format `json:"formats"`
+}
+
+type DownloadJobRequest struct {
+	URL      string `json:"url"`
+	FormatID string `json:"format_id"`
+}
+
+type DownloadJobResponse struct {
+	JobID       string       `json:"job_id"`
+	Status      string       `json:"status"`
+	URL         string       `json:"url"`
+	FormatID    string       `json:"format_id"`
+	DownloadURL string       `json:"download_url,omitempty"`
+	Error       *ErrorDetail `json:"error,omitempty"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
 }
 
 type ErrorBody struct {

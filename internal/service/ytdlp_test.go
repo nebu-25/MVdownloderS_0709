@@ -98,8 +98,8 @@ func TestPrepareDownloadRejectsMissingTrack(t *testing.T) {
 		context.Background(),
 		"https://www.youtube.com/watch?v=test",
 		"18",
-	); !errors.Is(err, ErrExtractionFailed) {
-		t.Fatalf("error = %v, want ErrExtractionFailed", err)
+	); !errors.Is(err, ErrMediaVerificationFailed) {
+		t.Fatalf("error = %v, want ErrMediaVerificationFailed", err)
 	}
 }
 
