@@ -1,13 +1,12 @@
 package service
 
 import (
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 )
 
 func TestMetadataBuildsMuxedAndDASHFormats(t *testing.T) {
-	ytdlp := NewYTDLP(fakeYTDLP(t), fakeFFmpeg(t), time.Second, zerolog.Nop())
+	ytdlp := newFakeService(t, fakeMetadataYTDLP(t), fakeFFprobe(t, true))
 
 	metadata, err := ytdlp.Metadata(context.Background(), "https://x.com/user/status/123")
 	if err != nil {
@@ -32,65 +31,57 @@ func TestMetadataBuildsMuxedAndDASHFormats(t *testing.T) {
 	}
 }
 
-func TestStreamSingleFormatPassesThroughYTDLP(t *testing.T) {
-	ytdlp := NewYTDLP(fakeYTDLP(t), fakeFFmpeg(t), time.Second, zerolog.Nop())
-	var output bytes.Buffer
-	var stderr []string
+func TestPrepareDownloadReturnsCompleteVerifiedFile(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "source.mp4")
+	if err := os.WriteFile(source, []byte("complete-media"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ytdlp := newFakeService(t, fakeDownloadYTDLP(t, source), fakeFFprobe(t, true))
 
-	err := ytdlp.Stream(
-		context.Background(),
-		"https://www.youtube.com/watch?v=test",
-		"18",
-		&output,
-		func(line string) { stderr = append(stderr, line) },
-	)
-	if err != nil {
-		t.Fatalf("Stream() error = %v", err)
-	}
-	if output.String() != "media" {
-		t.Fatalf("output = %q, want media", output.String())
-	}
-	args := strings.Join(stderr, " ")
-	if !strings.Contains(args, "-f 18 -o -") {
-		t.Errorf("arguments %q do not contain the selected format", args)
-	}
-	if strings.Contains(args, "--downloader ffmpeg") {
-		t.Errorf("single format unexpectedly uses the ffmpeg downloader: %q", args)
-	}
-}
-
-func TestStreamMergedUsesSeparatePipes(t *testing.T) {
-	ytdlp := NewYTDLP(fakeYTDLP(t), fakeFFmpeg(t), time.Second, zerolog.Nop())
-	var output bytes.Buffer
-	var stderr []string
-
-	err := ytdlp.Stream(
+	download, err := ytdlp.PrepareDownload(
 		context.Background(),
 		"https://www.youtube.com/watch?v=test",
 		"137+140",
-		&output,
-		func(line string) { stderr = append(stderr, line) },
 	)
 	if err != nil {
-		t.Fatalf("Stream() error = %v; stderr = %v", err, stderr)
+		t.Fatalf("PrepareDownload() error = %v", err)
 	}
-	if output.String() != "video+audio" {
-		t.Fatalf("output = %q, want video+audio", output.String())
+	tempDir := download.dir
+	content, err := os.ReadFile(filepath.Join(tempDir, "media.mp4"))
+	if err != nil {
+		t.Fatalf("read prepared file: %v", err)
 	}
-	logs := strings.Join(stderr, " ")
-	for _, expected := range []string{
-		"video: ", "-f 137 -o -",
-		"audio: ", "-f 140 -o -",
-		"ffmpeg: ", "-map 0:v:0", "-map 1:a:0",
-		"frag_keyframe+empty_moov+default_base_moof",
-	} {
-		if !strings.Contains(logs, expected) {
-			t.Errorf("process logs %q do not contain %q", logs, expected)
-		}
+	if string(content) != "complete-media" {
+		t.Fatalf("content = %q", content)
+	}
+	if download.Size() != int64(len(content)) {
+		t.Fatalf("size = %d, want %d", download.Size(), len(content))
+	}
+	if err := download.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("temporary directory still exists after Close(): %v", err)
 	}
 }
 
-func TestStreamMergedProducesVideoAndAudioTracks(t *testing.T) {
+func TestPrepareDownloadRejectsMissingTrack(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "source.mp4")
+	if err := os.WriteFile(source, []byte("audio-only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ytdlp := newFakeService(t, fakeDownloadYTDLP(t, source), fakeFFprobe(t, false))
+
+	if _, err := ytdlp.PrepareDownload(
+		context.Background(),
+		"https://www.youtube.com/watch?v=test",
+		"137+140",
+	); !errors.Is(err, ErrExtractionFailed) {
+		t.Fatalf("error = %v, want ErrExtractionFailed", err)
+	}
+}
+
+func TestPrepareDownloadWithRealFFprobe(t *testing.T) {
 	ffmpegPath, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("ffmpeg is not installed")
@@ -100,118 +91,100 @@ func TestStreamMergedProducesVideoAndAudioTracks(t *testing.T) {
 		t.Skip("ffprobe is not installed")
 	}
 
-	dir := t.TempDir()
-	videoPath := filepath.Join(dir, "video.mp4")
-	audioPath := filepath.Join(dir, "audio.m4a")
+	source := filepath.Join(t.TempDir(), "source.mp4")
 	runCommand(t, ffmpegPath,
 		"-loglevel", "error",
 		"-f", "lavfi", "-i", "color=c=blue:s=160x90:d=0.5",
-		"-an", "-c:v", "libx264", "-movflags", "+faststart", videoPath,
-	)
-	runCommand(t, ffmpegPath,
-		"-loglevel", "error",
 		"-f", "lavfi", "-i", "sine=frequency=440:duration=0.5",
-		"-vn", "-c:a", "aac", "-movflags", "+faststart", audioPath,
+		"-c:v", "libx264", "-c:a", "aac", "-shortest", source,
 	)
-
 	ytdlp := NewYTDLP(
-		fakeMediaYTDLP(t, videoPath, audioPath),
+		fakeDownloadYTDLP(t, source),
 		ffmpegPath,
+		ffprobePath,
+		"450M",
 		5*time.Second,
 		zerolog.Nop(),
 	)
-	var output bytes.Buffer
-	if err := ytdlp.Stream(
+
+	download, err := ytdlp.PrepareDownload(
 		context.Background(),
 		"https://www.youtube.com/watch?v=test",
 		"137+140",
-		&output,
-		nil,
-	); err != nil {
-		t.Fatalf("Stream() error = %v", err)
-	}
-
-	mergedPath := filepath.Join(dir, "merged.mp4")
-	if err := os.WriteFile(mergedPath, output.Bytes(), 0o600); err != nil {
-		t.Fatalf("write merged output: %v", err)
-	}
-	probe := runCommand(t, ffprobePath,
-		"-v", "error",
-		"-show_entries", "stream=codec_type",
-		"-of", "csv=p=0",
-		mergedPath,
 	)
-	tracks := string(probe)
-	if !strings.Contains(tracks, "video") || !strings.Contains(tracks, "audio") {
-		t.Fatalf("merged tracks = %q, want video and audio", tracks)
+	if err != nil {
+		t.Fatalf("PrepareDownload() error = %v", err)
+	}
+	if download.Size() <= 0 {
+		t.Fatal("prepared file is empty")
+	}
+	if err := download.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
 
-func fakeYTDLP(t *testing.T) string {
+func newFakeService(t *testing.T, ytdlpPath, ffprobePath string) *YTDLP {
+	t.Helper()
+	return NewYTDLP(
+		ytdlpPath,
+		"ffmpeg",
+		ffprobePath,
+		"450M",
+		time.Second,
+		zerolog.Nop(),
+	)
+}
+
+func fakeMetadataYTDLP(t *testing.T) string {
 	t.Helper()
 	script := `#!/bin/sh
-case "$*" in
-	*"--dump-single-json"*)
-		printf '%s' '{
-			"title":"test","thumbnail":"https://example.com/image.jpg","duration":10,
-			"formats":[
-				{"format_id":"18","ext":"mp4","resolution":"360p","vcodec":"avc1","acodec":"mp4a"},
-				{"format_id":"140","ext":"m4a","abr":129,"vcodec":"none","acodec":"mp4a"},
-				{"format_id":"139","ext":"m4a","abr":49,"vcodec":"none","acodec":"mp4a"},
-				{"format_id":"137","ext":"mp4","resolution":"1080p","vcodec":"avc1","acodec":"none"},
-				{"format_id":"248","ext":"mp4","resolution":"1080p","vcodec":"vp9","acodec":"none"},
-				{"format_id":"bad","ext":"mp4","resolution":"720p","vcodec":"avc1","acodec":"opus"}
-			]
-		}'
-		;;
-	*"-f 137 "*)
-		printf '%s' 'video'
-		printf '%s\n' "$*" >&2
-		;;
-	*"-f 140 "*)
-		printf '%s' 'audio'
-		printf '%s\n' "$*" >&2
-		;;
-	*)
-		printf '%s' 'media'
-		printf '%s\n' "$*" >&2
-		;;
-esac
+printf '%s' '{
+	"title":"test","thumbnail":"https://example.com/image.jpg","duration":10,
+	"formats":[
+		{"format_id":"18","ext":"mp4","resolution":"360p","vcodec":"avc1","acodec":"mp4a"},
+		{"format_id":"140","ext":"m4a","abr":129,"vcodec":"none","acodec":"mp4a"},
+		{"format_id":"137","ext":"mp4","resolution":"1080p","vcodec":"avc1","acodec":"none"},
+		{"format_id":"248","ext":"mp4","resolution":"1080p","vcodec":"vp9","acodec":"none"},
+		{"format_id":"bad","ext":"mp4","resolution":"720p","vcodec":"avc1","acodec":"opus"}
+	]
+}'
 `
-	path := filepath.Join(t.TempDir(), "fake-yt-dlp")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake yt-dlp: %v", err)
-	}
-	return path
+	return writeExecutable(t, "fake-metadata-yt-dlp", script)
 }
 
-func fakeFFmpeg(t *testing.T) string {
-	t.Helper()
-	script := `#!/bin/sh
-video=$(cat <&3)
-audio=$(cat <&4)
-printf '%s+%s' "$video" "$audio"
-printf '%s\n' "$*" >&2
-`
-	path := filepath.Join(t.TempDir(), "fake-ffmpeg")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake ffmpeg: %v", err)
-	}
-	return path
-}
-
-func fakeMediaYTDLP(t *testing.T, videoPath, audioPath string) string {
+func fakeDownloadYTDLP(t *testing.T, source string) string {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
-case "$*" in
-	*"-f 137 "*) cat %q ;;
-	*"-f 140 "*) cat %q ;;
-	*) exit 2 ;;
-esac
-`, videoPath, audioPath)
-	path := filepath.Join(t.TempDir(), "fake-media-yt-dlp")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write media yt-dlp: %v", err)
+output=""
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "-o" ]; then
+		shift
+		output="$1"
+		break
+	fi
+	shift
+done
+[ -n "$output" ] || exit 2
+cp %q "$output"
+`, source)
+	return writeExecutable(t, "fake-download-yt-dlp", script)
+}
+
+func fakeFFprobe(t *testing.T, hasVideo bool) string {
+	t.Helper()
+	tracks := "audio"
+	if hasVideo {
+		tracks = "video\\naudio"
+	}
+	return writeExecutable(t, "fake-ffprobe",
+		fmt.Sprintf("#!/bin/sh\nprintf '%%b\\n' %q\n", tracks))
+}
+
+func writeExecutable(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write %s: %v", name, err)
 	}
 	return path
 }

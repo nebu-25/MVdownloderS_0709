@@ -1,16 +1,14 @@
 package service
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -21,10 +19,12 @@ import (
 var ErrExtractionFailed = errors.New("media extraction failed")
 
 type YTDLP struct {
-	binary     string
-	ffmpegPath string
-	timeout    time.Duration
-	logger     zerolog.Logger
+	binary      string
+	ffmpegPath  string
+	ffprobePath string
+	maxFileSize string
+	timeout     time.Duration
+	logger      zerolog.Logger
 }
 
 type rawMetadata struct {
@@ -46,9 +46,14 @@ type rawFormat struct {
 	ACodec         string  `json:"acodec"`
 }
 
-func NewYTDLP(binary, ffmpegPath string, timeout time.Duration, logger zerolog.Logger) *YTDLP {
+func NewYTDLP(
+	binary, ffmpegPath, ffprobePath, maxFileSize string,
+	timeout time.Duration,
+	logger zerolog.Logger,
+) *YTDLP {
 	return &YTDLP{
-		binary: binary, ffmpegPath: ffmpegPath, timeout: timeout, logger: logger,
+		binary: binary, ffmpegPath: ffmpegPath, ffprobePath: ffprobePath,
+		maxFileSize: maxFileSize, timeout: timeout, logger: logger,
 	}
 }
 
@@ -171,216 +176,111 @@ func formatBitrate(format rawFormat) int64 {
 	return 0
 }
 
-func (y *YTDLP) Stream(
-	parent context.Context,
-	mediaURL, formatID string,
-	destination io.Writer,
-	onStderr func(string),
-) error {
-	parts := strings.Split(formatID, "+")
-	if len(parts) == 2 {
-		return y.streamMerged(parent, mediaURL, parts[0], parts[1], destination, onStderr)
-	}
-	return y.streamSingle(parent, mediaURL, formatID, destination, onStderr)
+type PreparedDownload struct {
+	file *os.File
+	dir  string
+	size int64
 }
 
-func (y *YTDLP) streamSingle(
+func (d *PreparedDownload) Read(buffer []byte) (int, error) {
+	return d.file.Read(buffer)
+}
+
+func (d *PreparedDownload) Close() error {
+	closeErr := d.file.Close()
+	removeErr := os.RemoveAll(d.dir)
+	if closeErr != nil {
+		return closeErr
+	}
+	return removeErr
+}
+
+func (d *PreparedDownload) Size() int64 {
+	return d.size
+}
+
+func (y *YTDLP) PrepareDownload(
 	parent context.Context,
 	mediaURL, formatID string,
-	destination io.Writer,
-	onStderr func(string),
-) error {
-	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
+) (*PreparedDownload, error) {
+	tempDir, err := os.MkdirTemp("", "video-download-*")
+	if err != nil {
+		return nil, fmt.Errorf("%w: create temporary directory: %v", ErrExtractionFailed, err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
 
+	outputPath := filepath.Join(tempDir, "media.mp4")
 	args := []string{
 		"--no-playlist",
 		"--no-warnings",
 		"--no-progress",
-	}
-	args = append(args, "-f", formatID, "-o", "-", "--", mediaURL)
-	cmd := exec.CommandContext(ctx, y.binary, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrExtractionFailed, err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrExtractionFailed, err)
-	}
-	if err := cmd.Start(); err != nil {
-		y.logCommandError("download_start", err)
-		return ErrExtractionFailed
-	}
-
-	stderrDone := make(chan struct{})
-	go func() {
-		defer close(stderrDone)
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			if onStderr != nil {
-				onStderr(scanner.Text())
-			}
-		}
-	}()
-
-	_, copyErr := io.Copy(destination, stdout)
-	if copyErr != nil {
-		cancel()
-	}
-	waitErr := cmd.Wait()
-	<-stderrDone
-
-	if copyErr != nil {
-		return copyErr
-	}
-	if waitErr != nil {
-		y.logCommandError("download", waitErr)
-		return ErrExtractionFailed
-	}
-	return nil
-}
-
-func (y *YTDLP) streamMerged(
-	parent context.Context,
-	mediaURL, videoFormat, audioFormat string,
-	destination io.Writer,
-	onStderr func(string),
-) error {
-	ctx, cancel := context.WithCancel(parent)
-	defer cancel()
-
-	videoReader, videoWriter, err := os.Pipe()
-	if err != nil {
-		return fmt.Errorf("%w: create video pipe: %v", ErrExtractionFailed, err)
-	}
-	defer videoReader.Close()
-	defer videoWriter.Close()
-
-	audioReader, audioWriter, err := os.Pipe()
-	if err != nil {
-		return fmt.Errorf("%w: create audio pipe: %v", ErrExtractionFailed, err)
-	}
-	defer audioReader.Close()
-	defer audioWriter.Close()
-
-	videoCmd := y.downloadCommand(ctx, mediaURL, videoFormat)
-	videoCmd.Stdout = videoWriter
-	audioCmd := y.downloadCommand(ctx, mediaURL, audioFormat)
-	audioCmd.Stdout = audioWriter
-
-	ffmpegCmd := exec.CommandContext(ctx, y.ffmpegPath,
-		"-hide_banner",
-		"-loglevel", "warning",
-		"-i", "pipe:3",
-		"-i", "pipe:4",
-		"-map", "0:v:0",
-		"-map", "1:a:0",
-		"-c:v", "copy",
-		"-c:a", "copy",
-		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
-		"-f", "mp4",
-		"pipe:1",
-	)
-	ffmpegCmd.ExtraFiles = []*os.File{videoReader, audioReader}
-	ffmpegCmd.Stdout = destination
-
-	videoStderr, err := videoCmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("%w: video stderr: %v", ErrExtractionFailed, err)
-	}
-	audioStderr, err := audioCmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("%w: audio stderr: %v", ErrExtractionFailed, err)
-	}
-	ffmpegStderr, err := ffmpegCmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("%w: ffmpeg stderr: %v", ErrExtractionFailed, err)
-	}
-
-	stderrDone := make(chan struct{}, 3)
-	var stderrMu sync.Mutex
-	scanStderr(videoStderr, "video", onStderr, &stderrMu, stderrDone)
-	scanStderr(audioStderr, "audio", onStderr, &stderrMu, stderrDone)
-	scanStderr(ffmpegStderr, "ffmpeg", onStderr, &stderrMu, stderrDone)
-
-	if err := ffmpegCmd.Start(); err != nil {
-		y.logCommandError("ffmpeg_start", err)
-		return ErrExtractionFailed
-	}
-	if err := videoCmd.Start(); err != nil {
-		cancel()
-		_ = ffmpegCmd.Wait()
-		y.logCommandError("video_download_start", err)
-		return ErrExtractionFailed
-	}
-	_ = videoWriter.Close()
-	if err := audioCmd.Start(); err != nil {
-		cancel()
-		_ = videoCmd.Wait()
-		_ = ffmpegCmd.Wait()
-		y.logCommandError("audio_download_start", err)
-		return ErrExtractionFailed
-	}
-	_ = audioWriter.Close()
-
-	type processResult struct {
-		name string
-		err  error
-	}
-	results := make(chan processResult, 3)
-	go func() { results <- processResult{"video_download", videoCmd.Wait()} }()
-	go func() { results <- processResult{"audio_download", audioCmd.Wait()} }()
-	go func() { results <- processResult{"ffmpeg_mux", ffmpegCmd.Wait()} }()
-
-	var firstErr error
-	for range 3 {
-		result := <-results
-		if result.err != nil && firstErr == nil {
-			firstErr = result.err
-			cancel()
-			y.logCommandError(result.name, result.err)
-		}
-	}
-	for range 3 {
-		<-stderrDone
-	}
-	if firstErr != nil {
-		return ErrExtractionFailed
-	}
-	return nil
-}
-
-func (y *YTDLP) downloadCommand(ctx context.Context, mediaURL, formatID string) *exec.Cmd {
-	return exec.CommandContext(ctx, y.binary,
-		"--no-playlist",
-		"--no-warnings",
-		"--no-progress",
+		"--force-overwrites",
+		"--ffmpeg-location", y.ffmpegPath,
+		"--merge-output-format", "mp4",
+		"--remux-video", "mp4",
+		"--max-filesize", y.maxFileSize,
 		"-f", formatID,
-		"-o", "-",
+		"-o", outputPath,
 		"--",
 		mediaURL,
-	)
+	}
+	cmd := exec.CommandContext(parent, y.binary, args...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		cleanup()
+		y.logOutputError("download_prepare", err, output)
+		return nil, ErrExtractionFailed
+	}
+
+	if err := y.verifyMedia(parent, outputPath); err != nil {
+		cleanup()
+		return nil, ErrExtractionFailed
+	}
+
+	file, err := os.Open(outputPath)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("%w: open output: %v", ErrExtractionFailed, err)
+	}
+	info, err := file.Stat()
+	if err != nil || info.Size() <= 0 {
+		_ = file.Close()
+		cleanup()
+		return nil, fmt.Errorf("%w: invalid output file", ErrExtractionFailed)
+	}
+	return &PreparedDownload{file: file, dir: tempDir, size: info.Size()}, nil
 }
 
-func scanStderr(
-	reader io.Reader,
-	prefix string,
-	onStderr func(string),
-	callbackMu *sync.Mutex,
-	done chan<- struct{},
-) {
-	go func() {
-		defer func() { done <- struct{}{} }()
-		scanner := bufio.NewScanner(reader)
-		for scanner.Scan() {
-			if onStderr != nil {
-				callbackMu.Lock()
-				onStderr(prefix + ": " + scanner.Text())
-				callbackMu.Unlock()
-			}
-		}
-	}()
+func (y *YTDLP) verifyMedia(ctx context.Context, mediaPath string) error {
+	cmd := exec.CommandContext(ctx, y.ffprobePath,
+		"-v", "error",
+		"-show_entries", "stream=codec_type",
+		"-of", "csv=p=0",
+		mediaPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		y.logOutputError("ffprobe", err, output)
+		return err
+	}
+	tracks := string(output)
+	if !strings.Contains(tracks, "video") || !strings.Contains(tracks, "audio") {
+		y.logger.Error().Str("tracks", strings.TrimSpace(tracks)).
+			Msg("prepared file is missing video or audio")
+		return errors.New("prepared file is missing required media tracks")
+	}
+	return nil
+}
+
+func (y *YTDLP) logOutputError(operation string, err error, output []byte) {
+	message := strings.TrimSpace(string(output))
+	if len(message) > 2000 {
+		message = message[len(message)-2000:]
+	}
+	y.logger.Error().
+		Str("operation", operation).
+		Str("output", message).
+		Err(err).
+		Msg("media command failed")
 }
 
 func (y *YTDLP) logCommandError(operation string, err error) {

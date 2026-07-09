@@ -20,6 +20,8 @@ func main() {
 	ytdlp := service.NewYTDLP(
 		envString("YTDLP_PATH", "yt-dlp"),
 		envString("FFMPEG_PATH", "ffmpeg"),
+		envString("FFPROBE_PATH", "ffprobe"),
+		envString("MAX_DOWNLOAD_SIZE", "450M"),
 		timeout,
 		logger,
 	)

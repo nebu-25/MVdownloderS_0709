@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"bufio"
-	"context"
 	"fmt"
 	"mime"
 	"path/filepath"
@@ -26,24 +24,36 @@ func Download(ytdlp *service.YTDLP, logger zerolog.Logger) fiber.Handler {
 			return sendError(c, fiber.StatusBadRequest, "INVALID_FORMAT", err.Error())
 		}
 
-		ctx, cancel := context.WithCancel(c.UserContext())
-
+		download, err := ytdlp.PrepareDownload(c.UserContext(), mediaURL, formatID)
+		if err != nil {
+			return extractionError(c, err)
+		}
 		c.Type("mp4")
 		c.Set(fiber.HeaderContentDisposition, contentDisposition("download.mp4"))
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		release := middleware.ClaimConcurrency(c)
-		c.Context().SetBodyStreamWriter(func(writer *bufio.Writer) {
-			defer release()
-			defer cancel()
-			err := ytdlp.Stream(ctx, mediaURL, formatID, writer, func(line string) {
-				logger.Debug().Str("message", line).Msg("yt-dlp")
-			})
-			if err != nil {
-				logger.Error().Err(err).Msg("download stream failed")
-			}
-		})
+		c.Context().SetBodyStream(&downloadBody{
+			PreparedDownload: download,
+			release:          release,
+			logger:           logger,
+		}, int(download.Size()))
 		return nil
 	}
+}
+
+type downloadBody struct {
+	*service.PreparedDownload
+	release func()
+	logger  zerolog.Logger
+}
+
+func (d *downloadBody) Close() error {
+	defer d.release()
+	if err := d.PreparedDownload.Close(); err != nil {
+		d.logger.Error().Err(err).Msg("temporary download cleanup failed")
+		return err
+	}
+	return nil
 }
 
 func contentDisposition(filename string) string {
