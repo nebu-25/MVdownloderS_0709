@@ -206,6 +206,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$output" ] || exit 2
 cp %q "$output"
+printf '%%s\n' "$output"
 `, source)
 	return writeExecutable(t, "fake-download-yt-dlp", script)
 }

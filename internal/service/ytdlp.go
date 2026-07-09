@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -226,24 +227,55 @@ func (y *YTDLP) PrepareDownload(
 		"--merge-output-format", "mp4",
 		"--remux-video", "mp4",
 		"--max-filesize", y.maxFileSize,
+		"--print", "after_move:filepath",
 		"-f", formatID,
 		"-o", outputPath,
 	}
 	args = append(args, y.runtimeArgs()...)
 	args = append(args, "--", mediaURL)
 	cmd := exec.CommandContext(parent, y.binary, args...)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
 		cleanup()
-		y.logOutputError("download_prepare", err, output)
+		return nil, fmt.Errorf("%w: prepare stdout pipe: %v", ErrExtractionFailed, err)
+	}
+	if err := cmd.Start(); err != nil {
+		cleanup()
+		return nil, fmt.Errorf("%w: start download: %v", ErrExtractionFailed, err)
+	}
+	outputBytes, readErr := io.ReadAll(stdout)
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("%w: read download output: %v", ErrExtractionFailed, readErr)
+	}
+	if waitErr != nil {
+		cleanup()
+		y.logOutputError("download_prepare", waitErr, []byte(stderr.String()))
 		return nil, ErrExtractionFailed
 	}
 
-	if err := y.verifyMedia(parent, outputPath); err != nil {
+	actualPath := strings.TrimSpace(string(outputBytes))
+	if actualPath == "" {
+		actualPath = outputPath
+	}
+	if !filepath.IsAbs(actualPath) {
+		actualPath = filepath.Join(tempDir, actualPath)
+	}
+	resolvedPath, err := y.ensureDownloadPath(actualPath, outputPath)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+
+	if err := y.verifyMedia(parent, resolvedPath); err != nil {
 		cleanup()
 		return nil, ErrExtractionFailed
 	}
 
-	file, err := os.Open(outputPath)
+	file, err := os.Open(resolvedPath)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("%w: open output: %v", ErrExtractionFailed, err)
@@ -255,6 +287,33 @@ func (y *YTDLP) PrepareDownload(
 		return nil, fmt.Errorf("%w: invalid output file", ErrExtractionFailed)
 	}
 	return &PreparedDownload{file: file, dir: tempDir, size: info.Size()}, nil
+}
+
+func (y *YTDLP) ensureDownloadPath(actualPath, fallbackPath string) (string, error) {
+	if _, err := os.Stat(actualPath); err == nil {
+		return actualPath, nil
+	}
+	if actualPath != fallbackPath {
+		if _, err := os.Stat(fallbackPath); err == nil {
+			return fallbackPath, nil
+		}
+	}
+
+	dir := filepath.Dir(fallbackPath)
+	matches, err := filepath.Glob(filepath.Join(dir, "*"))
+	if err != nil {
+		return "", fmt.Errorf("%w: inspect download directory: %v", ErrExtractionFailed, err)
+	}
+	if len(matches) == 1 {
+		if _, err := os.Stat(matches[0]); err == nil {
+			return matches[0], nil
+		}
+	}
+
+	if len(matches) > 0 {
+		return "", fmt.Errorf("%w: output file not created: %s (files: %s)", ErrExtractionFailed, actualPath, strings.Join(matches, ", "))
+	}
+	return "", fmt.Errorf("%w: output file not created: %s", ErrExtractionFailed, actualPath)
 }
 
 func (y *YTDLP) runtimeArgs() []string {
