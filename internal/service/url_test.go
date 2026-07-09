@@ -37,12 +37,12 @@ func TestValidateMediaURL(t *testing.T) {
 }
 
 func TestValidateFormatID(t *testing.T) {
-	for _, valid := range []string{"18", "best", "h264-720p", "format_1", "137+140"} {
+	for _, valid := range []string{"18", "best", "h264-720p", "format_1"} {
 		if err := ValidateFormatID(valid); err != nil {
 			t.Errorf("expected %q to be valid: %v", valid, err)
 		}
 	}
-	for _, invalid := range []string{"", "137+140+251", "18/best", "--help", "id value", "137+"} {
+	for _, invalid := range []string{"", "137+140", "137+140+251", "18/best", "--help", "id value", "137+"} {
 		if err := ValidateFormatID(invalid); err == nil {
 			t.Errorf("expected %q to be invalid", invalid)
 		}

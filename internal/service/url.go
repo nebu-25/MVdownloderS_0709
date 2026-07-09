@@ -43,8 +43,8 @@ func ValidateFormatID(value string) error {
 		return errors.New("invalid format ID")
 	}
 	parts := strings.Split(value, "+")
-	if len(parts) > 2 {
-		return errors.New("at most one video and one audio format can be merged")
+	if len(parts) != 1 {
+		return errors.New("separate video and audio formats are not supported")
 	}
 	for _, part := range parts {
 		if part == "" || strings.HasPrefix(part, "-") {

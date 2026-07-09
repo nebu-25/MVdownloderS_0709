@@ -13,21 +13,18 @@ import (
 	"github.com/rs/zerolog"
 )
 
-func TestMetadataBuildsMuxedAndDASHFormats(t *testing.T) {
+func TestMetadataReturnsOnlyPreMuxedFormats(t *testing.T) {
 	ytdlp := newFakeService(t, fakeMetadataYTDLP(t), fakeFFprobe(t, true))
 
 	metadata, err := ytdlp.Metadata(context.Background(), "https://x.com/user/status/123")
 	if err != nil {
 		t.Fatalf("Metadata() error = %v", err)
 	}
-	if len(metadata.Formats) != 2 {
-		t.Fatalf("got %d formats, want 2", len(metadata.Formats))
+	if len(metadata.Formats) != 1 {
+		t.Fatalf("got %d formats, want 1", len(metadata.Formats))
 	}
 	if metadata.Formats[0].FormatID != "18" || metadata.Formats[0].NeedsMerge {
 		t.Errorf("unexpected muxed format: %+v", metadata.Formats[0])
-	}
-	if metadata.Formats[1].FormatID != "137+140" || !metadata.Formats[1].NeedsMerge {
-		t.Errorf("unexpected DASH format: %+v", metadata.Formats[1])
 	}
 }
 
@@ -41,7 +38,7 @@ func TestPrepareDownloadReturnsCompleteVerifiedFile(t *testing.T) {
 	download, err := ytdlp.PrepareDownload(
 		context.Background(),
 		"https://www.youtube.com/watch?v=test",
-		"137+140",
+		"18",
 	)
 	if err != nil {
 		t.Fatalf("PrepareDownload() error = %v", err)
@@ -75,7 +72,7 @@ func TestPrepareDownloadRejectsMissingTrack(t *testing.T) {
 	if _, err := ytdlp.PrepareDownload(
 		context.Background(),
 		"https://www.youtube.com/watch?v=test",
-		"137+140",
+		"18",
 	); !errors.Is(err, ErrExtractionFailed) {
 		t.Fatalf("error = %v, want ErrExtractionFailed", err)
 	}
@@ -110,7 +107,7 @@ func TestPrepareDownloadWithRealFFprobe(t *testing.T) {
 	download, err := ytdlp.PrepareDownload(
 		context.Background(),
 		"https://www.youtube.com/watch?v=test",
-		"137+140",
+		"18",
 	)
 	if err != nil {
 		t.Fatalf("PrepareDownload() error = %v", err)

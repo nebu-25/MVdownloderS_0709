@@ -48,8 +48,8 @@ curl -X POST http://localhost:8080/api/v1/metadata \
   -d '{"url":"https://www.youtube.com/watch?v=VIDEO_ID"}'
 ```
 
-응답의 `formats`에 포함된 `format_id`로 다운로드합니다. `needs_merge`가
-`true`이면 `137+140`처럼 비디오와 오디오를 결합하는 포맷입니다.
+응답의 `formats`에 포함된 `format_id`로 다운로드합니다. Railway 운영
+안정성을 위해 영상과 음성이 이미 결합된 H.264/AAC MP4만 반환합니다.
 
 ```bash
 curl -G http://localhost:8080/api/v1/download \
@@ -58,8 +58,8 @@ curl -G http://localhost:8080/api/v1/download \
   -o video.mp4
 ```
 
-서버는 H.264/AAC 기반 MP4 결합 포맷과 DASH 조합을 반환합니다.
-두 개를 초과하는 포맷 조합이나 임의의 yt-dlp 선택 표현식은 허용하지 않습니다.
+서버는 H.264/AAC 기반 단일 MP4 포맷만 반환합니다. `137+140` 같은 DASH
+조합이나 임의의 yt-dlp 선택 표현식은 허용하지 않습니다.
 
 ## 환경 변수
 

@@ -88,20 +88,10 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 		Title: raw.Title, Thumbnail: raw.Thumbnail, Duration: raw.Duration,
 		Formats: make([]model.Format, 0, len(raw.Formats)),
 	}
-	var audio *rawFormat
-	for i := range raw.Formats {
-		format := &raw.Formats[i]
-		if format.VCodec == "none" && isMP4AudioCodec(format.ACodec) &&
-			(format.Ext == "m4a" || format.Ext == "mp4") {
-			if audio == nil || formatBitrate(*format) > formatBitrate(*audio) {
-				audio = format
-			}
-		}
-	}
-
 	for _, format := range raw.Formats {
 		if format.FormatID == "" || format.Ext != "mp4" ||
-			!isMP4VideoCodec(format.VCodec) {
+			!isMP4VideoCodec(format.VCodec) ||
+			!isMP4AudioCodec(format.ACodec) {
 			continue
 		}
 		resolution := format.Resolution
@@ -111,25 +101,6 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 		filesize := format.Filesize
 		if filesize == nil {
 			filesize = format.FilesizeApprox
-		}
-
-		if format.ACodec == "none" {
-			if audio == nil {
-				continue
-			}
-			result.Formats = append(result.Formats, model.Format{
-				FormatID:   format.FormatID + "+" + audio.FormatID,
-				Resolution: resolution,
-				Ext:        "mp4",
-				Filesize:   addFilesizes(filesize, effectiveFilesize(*audio)),
-				VideoCodec: format.VCodec,
-				AudioCodec: audio.ACodec,
-				NeedsMerge: true,
-			})
-			continue
-		}
-		if !isMP4AudioCodec(format.ACodec) {
-			continue
 		}
 
 		result.Formats = append(result.Formats, model.Format{
@@ -157,24 +128,6 @@ func effectiveFilesize(format rawFormat) *int64 {
 		return format.Filesize
 	}
 	return format.FilesizeApprox
-}
-
-func addFilesizes(left, right *int64) *int64 {
-	if left == nil || right == nil {
-		return nil
-	}
-	total := *left + *right
-	return &total
-}
-
-func formatBitrate(format rawFormat) int64 {
-	if format.AudioBitrate > 0 {
-		return int64(format.AudioBitrate * 1000)
-	}
-	if size := effectiveFilesize(format); size != nil {
-		return *size
-	}
-	return 0
 }
 
 type PreparedDownload struct {
