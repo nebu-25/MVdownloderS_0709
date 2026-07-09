@@ -11,7 +11,8 @@ FROM python:3.12-slim-bookworm
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir "yt-dlp[default]"
+    && pip install --no-cache-dir "yt-dlp[default]" \
+       "bgutil-ytdlp-pot-provider==1.3.1"
 COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=builder /out/server /server
 ENV PORT=8080 \

@@ -22,6 +22,7 @@ func main() {
 		envString("FFMPEG_PATH", "ffmpeg"),
 		envString("FFPROBE_PATH", "ffprobe"),
 		envString("MAX_DOWNLOAD_SIZE", "450M"),
+		os.Getenv("POT_PROVIDER_URL"),
 		timeout,
 		logger,
 	)

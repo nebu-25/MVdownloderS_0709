@@ -38,13 +38,19 @@ func TestValidateMediaURL(t *testing.T) {
 
 func TestValidateFormatID(t *testing.T) {
 	for _, valid := range []string{"18", "best", "h264-720p", "format_1"} {
-		if err := ValidateFormatID(valid); err != nil {
+		if err := ValidateFormatID(valid, false); err != nil {
 			t.Errorf("expected %q to be valid: %v", valid, err)
 		}
 	}
 	for _, invalid := range []string{"", "137+140", "137+140+251", "18/best", "--help", "id value", "137+"} {
-		if err := ValidateFormatID(invalid); err == nil {
+		if err := ValidateFormatID(invalid, false); err == nil {
 			t.Errorf("expected %q to be invalid", invalid)
 		}
+	}
+	if err := ValidateFormatID("137+140", true); err != nil {
+		t.Errorf("expected DASH format to be valid with provider: %v", err)
+	}
+	if err := ValidateFormatID("137+140+251", true); err == nil {
+		t.Error("expected three-part DASH format to be invalid")
 	}
 }

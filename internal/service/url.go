@@ -38,13 +38,16 @@ func ValidateMediaURL(raw string) error {
 	return ErrInvalidURL
 }
 
-func ValidateFormatID(value string) error {
+func ValidateFormatID(value string, allowMerge bool) error {
 	if value == "" || len(value) > 128 {
 		return errors.New("invalid format ID")
 	}
 	parts := strings.Split(value, "+")
-	if len(parts) != 1 {
+	if len(parts) != 1 && !allowMerge {
 		return errors.New("separate video and audio formats are not supported")
+	}
+	if len(parts) > 2 {
+		return errors.New("at most one video and one audio format can be merged")
 	}
 	for _, part := range parts {
 		if part == "" || strings.HasPrefix(part, "-") {

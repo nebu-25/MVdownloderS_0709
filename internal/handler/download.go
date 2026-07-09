@@ -20,7 +20,7 @@ func Download(ytdlp *service.YTDLP, logger zerolog.Logger) fiber.Handler {
 		if err := service.ValidateMediaURL(mediaURL); err != nil {
 			return sendError(c, fiber.StatusBadRequest, "INVALID_URL", "지원하지 않거나 올바르지 않은 URL입니다.")
 		}
-		if err := service.ValidateFormatID(formatID); err != nil {
+		if err := service.ValidateFormatID(formatID, ytdlp.SupportsDASH()); err != nil {
 			return sendError(c, fiber.StatusBadRequest, "INVALID_FORMAT", err.Error())
 		}
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,30 @@ func TestMetadataReturnsOnlyPreMuxedFormats(t *testing.T) {
 	}
 	if metadata.Formats[0].FormatID != "18" || metadata.Formats[0].NeedsMerge {
 		t.Errorf("unexpected muxed format: %+v", metadata.Formats[0])
+	}
+}
+
+func TestMetadataReturnsDASHFormatsWithProvider(t *testing.T) {
+	ytdlp := newFakeServiceWithProvider(
+		t,
+		fakeMetadataYTDLP(t),
+		fakeFFprobe(t, true),
+		"http://pot-provider.railway.internal:4416",
+	)
+
+	metadata, err := ytdlp.Metadata(context.Background(), "https://youtube.com/watch?v=test")
+	if err != nil {
+		t.Fatalf("Metadata() error = %v", err)
+	}
+	if len(metadata.Formats) != 2 {
+		t.Fatalf("got %d formats, want 2", len(metadata.Formats))
+	}
+	if metadata.Formats[1].FormatID != "137+140" || !metadata.Formats[1].NeedsMerge {
+		t.Errorf("unexpected DASH format: %+v", metadata.Formats[1])
+	}
+	args := strings.Join(ytdlp.runtimeArgs(), " ")
+	if !strings.Contains(args, "youtubepot-bgutilhttp:base_url=http://pot-provider.railway.internal:4416") {
+		t.Errorf("runtime args do not contain provider URL: %q", args)
 	}
 }
 
@@ -100,6 +125,7 @@ func TestPrepareDownloadWithRealFFprobe(t *testing.T) {
 		ffmpegPath,
 		ffprobePath,
 		"450M",
+		"",
 		5*time.Second,
 		zerolog.Nop(),
 	)
@@ -122,11 +148,20 @@ func TestPrepareDownloadWithRealFFprobe(t *testing.T) {
 
 func newFakeService(t *testing.T, ytdlpPath, ffprobePath string) *YTDLP {
 	t.Helper()
+	return newFakeServiceWithProvider(t, ytdlpPath, ffprobePath, "")
+}
+
+func newFakeServiceWithProvider(
+	t *testing.T,
+	ytdlpPath, ffprobePath, potProviderURL string,
+) *YTDLP {
+	t.Helper()
 	return NewYTDLP(
 		ytdlpPath,
 		"ffmpeg",
 		ffprobePath,
 		"450M",
+		potProviderURL,
 		time.Second,
 		zerolog.Nop(),
 	)

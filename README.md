@@ -48,8 +48,9 @@ curl -X POST http://localhost:8080/api/v1/metadata \
   -d '{"url":"https://www.youtube.com/watch?v=VIDEO_ID"}'
 ```
 
-응답의 `formats`에 포함된 `format_id`로 다운로드합니다. Railway 운영
-안정성을 위해 영상과 음성이 이미 결합된 H.264/AAC MP4만 반환합니다.
+응답의 `formats`에 포함된 `format_id`로 다운로드합니다. 기본 상태에서는
+영상과 음성이 이미 결합된 H.264/AAC MP4만 반환합니다. PO Token Provider가
+설정되면 `137+140` 같은 고화질 DASH 조합도 반환합니다.
 
 ```bash
 curl -G http://localhost:8080/api/v1/download \
@@ -58,8 +59,24 @@ curl -G http://localhost:8080/api/v1/download \
   -o video.mp4
 ```
 
-서버는 H.264/AAC 기반 단일 MP4 포맷만 반환합니다. `137+140` 같은 DASH
-조합이나 임의의 yt-dlp 선택 표현식은 허용하지 않습니다.
+임의의 yt-dlp 선택 표현식은 허용하지 않습니다. DASH 조합은
+`POT_PROVIDER_URL`이 설정된 경우에만 허용됩니다.
+
+## Railway 고화질 YouTube 설정
+
+1. 같은 Railway 프로젝트에 Docker Image 서비스를 추가합니다.
+   - 이미지: `brainicism/bgutil-ytdlp-pot-provider:1.3.1-deno`
+   - 서비스 이름 예시: `pot-provider`
+2. Provider 서비스는 공개 도메인을 만들지 않고 Private Networking만 사용합니다.
+3. API 서비스 변수에 다음 값을 추가하고 재배포합니다.
+
+```text
+POT_PROVIDER_URL=http://pot-provider.railway.internal:4416
+```
+
+Provider가 설정되지 않으면 서비스는 검증된 단일 MP4 포맷으로 자동
+폴백합니다. PO Token은 YouTube의 정책 변경이나 IP 상태에 따라 403 차단을
+완전히 방지하지 못할 수 있습니다.
 
 ## 환경 변수
 
@@ -71,6 +88,7 @@ curl -G http://localhost:8080/api/v1/download \
 | `FFMPEG_PATH` | `ffmpeg` | ffmpeg 실행 파일 경로 |
 | `FFPROBE_PATH` | `ffprobe` | ffprobe 실행 파일 경로 |
 | `MAX_DOWNLOAD_SIZE` | `450M` | yt-dlp 입력 포맷별 최대 크기 |
+| `POT_PROVIDER_URL` | 미설정 | bgutil PO Token Provider 내부 URL |
 | `YTDLP_TIMEOUT` | `30s` | 메타데이터 추출 제한 시간 |
 
 ## 검증

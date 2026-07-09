@@ -19,12 +19,13 @@ import (
 var ErrExtractionFailed = errors.New("media extraction failed")
 
 type YTDLP struct {
-	binary      string
-	ffmpegPath  string
-	ffprobePath string
-	maxFileSize string
-	timeout     time.Duration
-	logger      zerolog.Logger
+	binary         string
+	ffmpegPath     string
+	ffprobePath    string
+	maxFileSize    string
+	potProviderURL string
+	timeout        time.Duration
+	logger         zerolog.Logger
 }
 
 type rawMetadata struct {
@@ -47,28 +48,33 @@ type rawFormat struct {
 }
 
 func NewYTDLP(
-	binary, ffmpegPath, ffprobePath, maxFileSize string,
+	binary, ffmpegPath, ffprobePath, maxFileSize, potProviderURL string,
 	timeout time.Duration,
 	logger zerolog.Logger,
 ) *YTDLP {
 	return &YTDLP{
 		binary: binary, ffmpegPath: ffmpegPath, ffprobePath: ffprobePath,
-		maxFileSize: maxFileSize, timeout: timeout, logger: logger,
+		maxFileSize: maxFileSize, potProviderURL: strings.TrimRight(potProviderURL, "/"),
+		timeout: timeout, logger: logger,
 	}
+}
+
+func (y *YTDLP) SupportsDASH() bool {
+	return y.potProviderURL != ""
 }
 
 func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.MetadataResponse, error) {
 	ctx, cancel := context.WithTimeout(parent, y.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, y.binary,
+	args := []string{
 		"--dump-single-json",
 		"--no-playlist",
 		"--no-warnings",
-		"--js-runtimes", "deno",
-		"--",
-		mediaURL,
-	)
+	}
+	args = append(args, y.runtimeArgs()...)
+	args = append(args, "--", mediaURL)
+	cmd := exec.CommandContext(ctx, y.binary, args...)
 	output, err := cmd.Output()
 	if err != nil {
 		y.logCommandError("metadata", err)
@@ -88,10 +94,21 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 		Title: raw.Title, Thumbnail: raw.Thumbnail, Duration: raw.Duration,
 		Formats: make([]model.Format, 0, len(raw.Formats)),
 	}
+	var audio *rawFormat
+	if y.SupportsDASH() {
+		for i := range raw.Formats {
+			format := &raw.Formats[i]
+			if format.VCodec == "none" && isMP4AudioCodec(format.ACodec) &&
+				(format.Ext == "m4a" || format.Ext == "mp4") {
+				if audio == nil || formatBitrate(*format) > formatBitrate(*audio) {
+					audio = format
+				}
+			}
+		}
+	}
 	for _, format := range raw.Formats {
 		if format.FormatID == "" || format.Ext != "mp4" ||
-			!isMP4VideoCodec(format.VCodec) ||
-			!isMP4AudioCodec(format.ACodec) {
+			!isMP4VideoCodec(format.VCodec) {
 			continue
 		}
 		resolution := format.Resolution
@@ -103,6 +120,24 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 			filesize = format.FilesizeApprox
 		}
 
+		if format.ACodec == "none" {
+			if audio == nil {
+				continue
+			}
+			result.Formats = append(result.Formats, model.Format{
+				FormatID:   format.FormatID + "+" + audio.FormatID,
+				Resolution: resolution,
+				Ext:        "mp4",
+				Filesize:   addFilesizes(filesize, effectiveFilesize(*audio)),
+				VideoCodec: format.VCodec,
+				AudioCodec: audio.ACodec,
+				NeedsMerge: true,
+			})
+			continue
+		}
+		if !isMP4AudioCodec(format.ACodec) {
+			continue
+		}
 		result.Formats = append(result.Formats, model.Format{
 			FormatID: format.FormatID, Resolution: resolution, Ext: format.Ext,
 			Filesize: filesize, VideoCodec: format.VCodec, AudioCodec: format.ACodec,
@@ -128,6 +163,24 @@ func effectiveFilesize(format rawFormat) *int64 {
 		return format.Filesize
 	}
 	return format.FilesizeApprox
+}
+
+func addFilesizes(left, right *int64) *int64 {
+	if left == nil || right == nil {
+		return nil
+	}
+	total := *left + *right
+	return &total
+}
+
+func formatBitrate(format rawFormat) int64 {
+	if format.AudioBitrate > 0 {
+		return int64(format.AudioBitrate * 1000)
+	}
+	if size := effectiveFilesize(format); size != nil {
+		return *size
+	}
+	return 0
 }
 
 type PreparedDownload struct {
@@ -168,7 +221,6 @@ func (y *YTDLP) PrepareDownload(
 		"--no-playlist",
 		"--no-warnings",
 		"--no-progress",
-		"--js-runtimes", "deno",
 		"--force-overwrites",
 		"--ffmpeg-location", y.ffmpegPath,
 		"--merge-output-format", "mp4",
@@ -176,9 +228,9 @@ func (y *YTDLP) PrepareDownload(
 		"--max-filesize", y.maxFileSize,
 		"-f", formatID,
 		"-o", outputPath,
-		"--",
-		mediaURL,
 	}
+	args = append(args, y.runtimeArgs()...)
+	args = append(args, "--", mediaURL)
 	cmd := exec.CommandContext(parent, y.binary, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		cleanup()
@@ -203,6 +255,17 @@ func (y *YTDLP) PrepareDownload(
 		return nil, fmt.Errorf("%w: invalid output file", ErrExtractionFailed)
 	}
 	return &PreparedDownload{file: file, dir: tempDir, size: info.Size()}, nil
+}
+
+func (y *YTDLP) runtimeArgs() []string {
+	args := []string{"--js-runtimes", "deno"}
+	if y.SupportsDASH() {
+		args = append(args,
+			"--extractor-args",
+			"youtubepot-bgutilhttp:base_url="+y.potProviderURL,
+		)
+	}
+	return args
 }
 
 func (y *YTDLP) verifyMedia(ctx context.Context, mediaPath string) error {
