@@ -29,6 +29,9 @@ docker build -t video-downloader .
 docker run --rm -p 8080:8080 video-downloader
 ```
 
+브라우저에서 `http://localhost:8080`을 열면 URL 입력, 포맷 선택 및 다운로드가
+가능한 웹 화면을 사용할 수 있습니다.
+
 ## API
 
 상태 확인:

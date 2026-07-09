@@ -11,6 +11,7 @@ import (
 	"github.com/nebu-25/MVdownloderS_0709/internal/handler"
 	"github.com/nebu-25/MVdownloderS_0709/internal/middleware"
 	"github.com/nebu-25/MVdownloderS_0709/internal/service"
+	"github.com/nebu-25/MVdownloderS_0709/internal/web"
 )
 
 func main() {
@@ -26,6 +27,7 @@ func main() {
 		ErrorHandler: handler.FiberErrorHandler,
 	})
 	app.Use(middleware.RequestLogger(logger))
+	web.Register(app)
 
 	api := app.Group("/api/v1")
 	api.Get("/health", handler.Health)
