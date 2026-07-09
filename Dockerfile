@@ -1,3 +1,5 @@
+FROM denoland/deno:bin-2.9.2 AS deno
+
 FROM golang:1.22-bookworm AS builder
 WORKDIR /src
 COPY go.mod go.sum* ./
@@ -7,9 +9,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/server 
 
 FROM python:3.12-slim-bookworm
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates ffmpeg nodejs \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir "yt-dlp[default]"
+COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=builder /out/server /server
 ENV PORT=8080 \
     RATE_LIMIT_PER_IP=2 \

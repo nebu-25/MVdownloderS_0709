@@ -138,6 +138,10 @@ func newFakeService(t *testing.T, ytdlpPath, ffprobePath string) *YTDLP {
 func fakeMetadataYTDLP(t *testing.T) string {
 	t.Helper()
 	script := `#!/bin/sh
+case "$*" in
+	*"--js-runtimes deno"*) ;;
+	*) exit 3 ;;
+esac
 printf '%s' '{
 	"title":"test","thumbnail":"https://example.com/image.jpg","duration":10,
 	"formats":[
@@ -155,6 +159,10 @@ printf '%s' '{
 func fakeDownloadYTDLP(t *testing.T, source string) string {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
+case "$*" in
+	*"--js-runtimes deno"*) ;;
+	*) exit 3 ;;
+esac
 output=""
 while [ "$#" -gt 0 ]; do
 	if [ "$1" = "-o" ]; then

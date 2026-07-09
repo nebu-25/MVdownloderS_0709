@@ -65,6 +65,7 @@ func (y *YTDLP) Metadata(parent context.Context, mediaURL string) (model.Metadat
 		"--dump-single-json",
 		"--no-playlist",
 		"--no-warnings",
+		"--js-runtimes", "deno",
 		"--",
 		mediaURL,
 	)
@@ -214,6 +215,7 @@ func (y *YTDLP) PrepareDownload(
 		"--no-playlist",
 		"--no-warnings",
 		"--no-progress",
+		"--js-runtimes", "deno",
 		"--force-overwrites",
 		"--ffmpeg-location", y.ffmpegPath,
 		"--merge-output-format", "mp4",
