@@ -291,14 +291,27 @@ func (y *YTDLP) verifyMedia(ctx context.Context, mediaPath string) error {
 
 func (y *YTDLP) logOutputError(operation string, err error, output []byte) {
 	message := strings.TrimSpace(string(output))
-	if len(message) > 2000 {
-		message = message[len(message)-2000:]
+	// Log full stderr for debugging, split into chunks if too large
+	if len(message) > 5000 {
+		// Log first 2500 chars
+		y.logger.Error().
+			Str("operation", operation).
+			Str("stderr_start", message[:2500]).
+			Err(err).
+			Msg("media command failed (stderr start)")
+		// Log last 2500 chars
+		y.logger.Error().
+			Str("operation", operation).
+			Str("stderr_end", message[len(message)-2500:]).
+			Err(err).
+			Msg("media command failed (stderr end)")
+	} else {
+		y.logger.Error().
+			Str("operation", operation).
+			Str("stderr", message).
+			Err(err).
+			Msg("media command failed")
 	}
-	y.logger.Error().
-		Str("operation", operation).
-		Str("output", message).
-		Err(err).
-		Msg("media command failed")
 }
 
 func (y *YTDLP) logCommandError(operation string, err error) {
@@ -313,3 +326,4 @@ func (y *YTDLP) logCommandError(operation string, err error) {
 	}
 	event.Err(err).Msg("yt-dlp command failed")
 }
+
