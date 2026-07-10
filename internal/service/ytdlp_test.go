@@ -35,6 +35,9 @@ func TestMetadataReturnsDASHFormatsWithProvider(t *testing.T) {
 		fakeMetadataYTDLP(t),
 		fakeFFprobe(t, true),
 		"http://pot-provider.railway.internal:4416",
+		"",
+		"",
+		"node",
 	)
 
 	metadata, err := ytdlp.Metadata(context.Background(), "https://youtube.com/watch?v=test")
@@ -50,6 +53,43 @@ func TestMetadataReturnsDASHFormatsWithProvider(t *testing.T) {
 	args := strings.Join(ytdlp.runtimeArgs(), " ")
 	if !strings.Contains(args, "youtubepot-bgutilhttp:base_url=http://pot-provider.railway.internal:4416") {
 		t.Errorf("runtime args do not contain provider URL: %q", args)
+	}
+}
+
+func TestRuntimeArgsIncludesCookiesPath(t *testing.T) {
+	ytdlp := newFakeServiceWithOptions(
+		t,
+		fakeMetadataYTDLP(t),
+		fakeFFprobe(t, true),
+		"",
+		"",
+		"/run/secrets/youtube-cookies.txt",
+		"node",
+	)
+
+	args := strings.Join(ytdlp.runtimeArgs(), " ")
+	if !strings.Contains(args, "--cookies /run/secrets/youtube-cookies.txt") {
+		t.Errorf("runtime args do not contain cookies path: %q", args)
+	}
+}
+
+func TestRuntimeArgsIncludesProxyAndJSRuntime(t *testing.T) {
+	ytdlp := newFakeServiceWithOptions(
+		t,
+		fakeMetadataYTDLP(t),
+		fakeFFprobe(t, true),
+		"",
+		"http://user:pass@proxy.example:8080",
+		"",
+		"node",
+	)
+
+	args := strings.Join(ytdlp.runtimeArgs(), " ")
+	if !strings.Contains(args, "--proxy http://user:pass@proxy.example:8080") {
+		t.Errorf("runtime args do not contain proxy: %q", args)
+	}
+	if !strings.Contains(args, "--js-runtimes node") {
+		t.Errorf("runtime args do not contain js runtime: %q", args)
 	}
 }
 
@@ -126,6 +166,9 @@ func TestPrepareDownloadWithRealFFprobe(t *testing.T) {
 		ffprobePath,
 		"450M",
 		"",
+		"",
+		"",
+		"node",
 		5*time.Second,
 		zerolog.Nop(),
 	)
@@ -148,12 +191,28 @@ func TestPrepareDownloadWithRealFFprobe(t *testing.T) {
 
 func newFakeService(t *testing.T, ytdlpPath, ffprobePath string) *YTDLP {
 	t.Helper()
-	return newFakeServiceWithProvider(t, ytdlpPath, ffprobePath, "")
+	return newFakeServiceWithProvider(t, ytdlpPath, ffprobePath, "", "", "", "node")
 }
 
 func newFakeServiceWithProvider(
 	t *testing.T,
-	ytdlpPath, ffprobePath, potProviderURL string,
+	ytdlpPath, ffprobePath, potProviderURL, proxy, cookiesPath, jsRuntime string,
+) *YTDLP {
+	t.Helper()
+	return newFakeServiceWithOptions(
+		t,
+		ytdlpPath,
+		ffprobePath,
+		potProviderURL,
+		proxy,
+		cookiesPath,
+		jsRuntime,
+	)
+}
+
+func newFakeServiceWithOptions(
+	t *testing.T,
+	ytdlpPath, ffprobePath, potProviderURL, proxy, cookiesPath, jsRuntime string,
 ) *YTDLP {
 	t.Helper()
 	return NewYTDLP(
@@ -162,6 +221,9 @@ func newFakeServiceWithProvider(
 		ffprobePath,
 		"450M",
 		potProviderURL,
+		proxy,
+		cookiesPath,
+		jsRuntime,
 		time.Second,
 		zerolog.Nop(),
 	)
@@ -171,7 +233,11 @@ func fakeMetadataYTDLP(t *testing.T) string {
 	t.Helper()
 	script := `#!/bin/sh
 case "$*" in
-	*"--js-runtimes deno"*) ;;
+	*"--ignore-config"*) ;;
+	*) exit 3 ;;
+esac
+case "$*" in
+	*"--js-runtimes node"*) ;;
 	*) exit 3 ;;
 esac
 printf '%s' '{
@@ -192,7 +258,11 @@ func fakeDownloadYTDLP(t *testing.T, source string) string {
 	t.Helper()
 	script := fmt.Sprintf(`#!/bin/sh
 case "$*" in
-	*"--js-runtimes deno"*) ;;
+	*"--ignore-config"*) ;;
+	*) exit 3 ;;
+esac
+case "$*" in
+	*"--js-runtimes node"*) ;;
 	*) exit 3 ;;
 esac
 output=""

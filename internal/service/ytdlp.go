@@ -29,6 +29,9 @@ type YTDLP struct {
 	ffprobePath    string
 	maxFileSize    string
 	potProviderURL string
+	proxy          string
+	cookiesPath    string
+	jsRuntime      string
 	timeout        time.Duration
 	logger         zerolog.Logger
 }
@@ -53,14 +56,21 @@ type rawFormat struct {
 }
 
 func NewYTDLP(
-	binary, ffmpegPath, ffprobePath, maxFileSize, potProviderURL string,
+	binary, ffmpegPath, ffprobePath, maxFileSize, potProviderURL, proxy, cookiesPath, jsRuntime string,
 	timeout time.Duration,
 	logger zerolog.Logger,
 ) *YTDLP {
 	return &YTDLP{
-		binary: binary, ffmpegPath: ffmpegPath, ffprobePath: ffprobePath,
-		maxFileSize: maxFileSize, potProviderURL: strings.TrimRight(potProviderURL, "/"),
-		timeout: timeout, logger: logger,
+		binary:         binary,
+		ffmpegPath:     ffmpegPath,
+		ffprobePath:    ffprobePath,
+		maxFileSize:    maxFileSize,
+		potProviderURL: strings.TrimRight(potProviderURL, "/"),
+		proxy:          strings.TrimSpace(proxy),
+		cookiesPath:    strings.TrimSpace(cookiesPath),
+		jsRuntime:      strings.TrimSpace(jsRuntime),
+		timeout:        timeout,
+		logger:         logger,
 	}
 }
 
@@ -342,7 +352,16 @@ func (y *YTDLP) ensureDownloadPath(actualPath, fallbackPath string) (string, err
 }
 
 func (y *YTDLP) runtimeArgs() []string {
-	args := []string{"--js-runtimes", "deno"}
+	args := []string{"--ignore-config"}
+	if y.proxy != "" {
+		args = append(args, "--proxy", y.proxy)
+	}
+	if y.cookiesPath != "" {
+		args = append(args, "--cookies", y.cookiesPath)
+	}
+	if y.jsRuntime != "" {
+		args = append(args, "--js-runtimes", y.jsRuntime)
+	}
 	if y.SupportsDASH() {
 		args = append(args,
 			"--extractor-args",

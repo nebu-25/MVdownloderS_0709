@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -23,6 +24,9 @@ func main() {
 		envString("FFPROBE_PATH", "ffprobe"),
 		envString("MAX_DOWNLOAD_SIZE", "450M"),
 		os.Getenv("POT_PROVIDER_URL"),
+		os.Getenv("YTDLP_PROXY"),
+		cookiesPath(logger),
+		envString("YTDLP_JS_RUNTIME", "node"),
 		timeout,
 		logger,
 	)
@@ -78,4 +82,22 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return value
+}
+
+func cookiesPath(logger zerolog.Logger) string {
+	if path := os.Getenv("YTDLP_COOKIES_PATH"); path != "" {
+		return path
+	}
+	if path := os.Getenv("YTDLP_COOKIES_FILE"); path != "" {
+		return path
+	}
+	content := os.Getenv("YTDLP_COOKIES")
+	if content == "" {
+		return ""
+	}
+	path := filepath.Join(os.TempDir(), "youtube-cookies.txt")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		logger.Fatal().Err(err).Msg("write yt-dlp cookies file failed")
+	}
+	return path
 }
